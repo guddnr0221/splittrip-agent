@@ -22,6 +22,7 @@ main,.panel,.editor,.result-card{min-width:0}
   .item-table-head{display:none}
   .item-row{grid-template-columns:minmax(0,1fr) 52px 76px 24px;padding-left:7px;padding-right:7px}
   .editor-footer{gap:8px;flex-wrap:wrap}
+  .total-review{width:100%;align-items:flex-start}.total-check{line-height:1.45}.editor-total{width:100%;display:flex;justify-content:space-between;align-items:center}
   .editor-total b{font-size:16px}
   .legend{flex-wrap:wrap}
   .alloc-top{padding:12px 10px}

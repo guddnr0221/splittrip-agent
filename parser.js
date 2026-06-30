@@ -8,6 +8,9 @@
   // phone number or payment total silently becoming a shared expense.
   const META_WORDS=/사업자|사업장|대표자|등록번호|주소|도로명|전화|연락처|승인번호|승인일시|카드번호|거래번호|주문번호|영수증|매장명|테이블|인원수|판매원|계산원|포스|고객|문의|교환|환불|감사합니다|merchant|address|phone|tel\b|fax\b|cashier|register|table|guest|receipt|invoice|transaction|approval|auth(?:orization)?|card\s*(?:no|number)|order\s*(?:no|number)|thank\s*you|店舗|店名|住所|電話|担当|係員|レジ|客数|人数|伝票|領収書|レシート|取引|承認|カード番号|注文番号|谢谢|地址|电话|收银员|订单号|发票/i;
   const SUMMARY_WORDS=/공급가|과세|면세|부가세|세액|소계|합계|총액|총\s*결제|결제\s*금액|받은\s*금액|거스름|잔돈|할인|현금|신용카드|체크카드|subtotal|grand\s*total|amount\s*due|balance|total|tax|vat|discount|payment|tender|cash|change|credit|debit|小計|合計|総額|消費税|内税|外税|課税|免税|値引|割引|お預かり|お釣り|現金|クレジット|カード|売上|点数|合计|小计|税额|折扣|支付|现金|找零|信用卡/i;
+  const SUBTOTAL_OR_TAX=/공급가|과세|면세|부가세|세액|소계|subtotal|tax|vat|小計|消費税|内税|外税|課税|免税|税額|小计|税额/i;
+  const PAYMENT_ONLY=/받은\s*금액|거스름|잔돈|현금|신용카드|체크카드|payment|tender|cash|change|credit|debit|お預かり|お釣り|現金|クレジット|カード|支付|现金|找零|信用卡/i;
+  const FINAL_TOTAL=/최종\s*(?:합계|금액)|총\s*(?:합계|금액|결제액?)|총액|결제\s*금액|^\s*합계|grand\s*total|amount\s*due|balance\s*due|net\s*total|^\s*total\b|総合計|総額|お支払(?:い)?額|請求額|^\s*合計|总计|应付|^\s*合计/i;
   const HEADER_WORDS=/품명|품목|상품명|수량|단가|금액|item|description|product|qty|quantity|unit\s*price|amount|品名|商品|数量|単価|金額|项目|商品名|数量|单价|金额/i;
   const DATE_TIME=/(?:19|20)\d{2}\s*[./年-]\s*\d{1,2}\s*[./月-]\s*\d{1,2}(?:日)?|\d{1,2}\s*[./-]\s*\d{1,2}\s*[./-]\s*(?:\d{2}|\d{4})|\b\d{1,2}:\d{2}(?::\d{2})?\b|\b(?:19|20)\d{2}[01]\d[0-3]\d\b/;
   const PHONE=/(?:\+?\d{1,3}[\s.-]?)?(?:\(?0\d{1,3}\)?[\s.-]?)?\d{2,4}[\s.-]\d{2,4}[\s.-]\d{3,4}/;
@@ -132,5 +135,31 @@
     }
     return items.slice(0,30);
   }
-  return{detectCurrency,parseOCR,parseLine};
+
+  function findStatedTotal(text){
+    const lines=String(text||'').replace(/\r/g,'').split('\n').map(normalize).filter(Boolean);
+    let best=null;
+    lines.forEach((line,index)=>{
+      if(!FINAL_TOTAL.test(line)||SUBTOTAL_OR_TAX.test(line)||PAYMENT_ONLY.test(line))return;
+      const nums=amountsIn(line),amount=nums.length?nums[nums.length-1].value:NaN;
+      if(!Number.isFinite(amount)||amount<=0||amount>100000000)return;
+      const priority=/최종|총액|총\s*(?:합계|금액|결제)|grand\s*total|amount\s*due|balance\s*due|総合計|総額|お支払|請求額|总计|应付/i.test(line)?3:2;
+      if(!best||priority>best.priority||(priority===best.priority&&index>best.index))best={amount,priority,index,label:line.slice(0,60)};
+    });
+    return best;
+  }
+
+  function analyzeOCR(text,peopleCount=0){
+    const currency=detectCurrency(text),items=parseOCR(text,peopleCount),summary=findStatedTotal(text);
+    const calculatedTotal=Math.round(items.reduce((sum,item)=>sum+item.qty*item.price,0)*100)/100;
+    const statedTotal=summary?summary.amount:null;
+    const difference=statedTotal==null?null:Math.round((calculatedTotal-statedTotal)*100)/100;
+    const tolerance=statedTotal==null?0:Math.max(1,Math.abs(statedTotal)*.01);
+    return{
+      currency,items,calculatedTotal,statedTotal,difference,
+      totalMatches:statedTotal==null?null:Math.abs(difference)<=tolerance,
+      totalLabel:summary?summary.label:''
+    };
+  }
+  return{detectCurrency,parseOCR,parseLine,analyzeOCR,findStatedTotal};
 });

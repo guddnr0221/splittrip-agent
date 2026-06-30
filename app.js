@@ -3,7 +3,7 @@ const CURRENCIES={KRW:{symbol:'₩',name:'대한민국 원'},JPY:{symbol:'¥',na
 const STORAGE_KEY='splittrip-state-v2';
 const state={people:[],receipts:[],activeReceipt:0};
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
-const {detectCurrency,parseOCR:parseReceiptText}=window.SplitTripParser;
+const {detectCurrency,analyzeOCR:analyzeReceiptText}=window.SplitTripParser;
 const money=(n,c='KRW')=>`${CURRENCIES[c]?.symbol||''}${Math.round(n||0).toLocaleString('ko-KR')}`;
 const uid=()=>Math.random().toString(36).slice(2,9);
 
@@ -47,25 +47,40 @@ async function scanFiles(files){
   let worker;
   try{
     if(!window.Tesseract?.createWorker)throw new Error('OCR library unavailable');
-    let current=0;
+    let current=0,reviewing=false;
     worker=await Tesseract.createWorker('kor+eng+jpn',1,{
       workerPath:'./vendor/ocr-worker.js',
       workerBlobURL:false,
       corePath:'./vendor/core',
       langPath:'./vendor/lang',
-      logger:m=>{if(m.progress){const p=Math.round(((current+m.progress)/valid.length)*100);$('#scanPercent').textContent=Math.min(100,p)+'%';$('#scanText').textContent=m.status==='recognizing text'?`${current+1}번째 영수증의 품목과 가격을 찾는 중...`:'OCR 엔진을 준비하는 중...'}}
+      logger:m=>{if(m.progress){const p=Math.round(((current+m.progress)/valid.length)*100);$('#scanPercent').textContent=Math.min(100,p)+'%';$('#scanText').textContent=reviewing?`${current+1}번째 영수증의 합계가 맞지 않아 다시 검토하는 중...`:m.status==='recognizing text'?`${current+1}번째 영수증의 품목과 가격을 찾는 중...`:'OCR 엔진을 준비하는 중...'}}
     });
     await worker.setParameters({tessedit_pageseg_mode:'6',preserve_interword_spaces:'1'});
     for(const file of valid){
-      let text='';
-      try{const prepared=await preprocessReceipt(file),result=await worker.recognize(prepared);text=result.data.text||''}
+      let text='',analysis=null,reviewAttempts=1,reviewRolledBack=false;
+      try{
+        const prepared=await preprocessReceipt(file),result=await worker.recognize(prepared);text=result.data.text||'';
+        analysis=analyzeReceiptText(text,state.people.length);
+        if(analysis.totalMatches===false){
+          const primary=analysis;reviewing=true;reviewAttempts=2;
+          try{
+            await worker.setParameters({tessedit_pageseg_mode:'11',preserve_interword_spaces:'1'});
+            const retry=await worker.recognize(prepared),alternative=analyzeReceiptText(retry.data.text||'',state.people.length);
+            const distance=a=>Number.isFinite(a.statedTotal)?Math.abs(a.calculatedTotal-a.statedTotal):Infinity;
+            if(alternative.totalMatches===true||distance(alternative)<distance(primary))analysis=alternative;
+            else reviewRolledBack=true;
+          }finally{
+            reviewing=false;await worker.setParameters({tessedit_pageseg_mode:'6',preserve_interword_spaces:'1'});
+          }
+        }
+      }
       catch(e){toast(`${file.name}: 글자를 충분히 읽지 못해 직접 입력 화면을 열었어요.`)}
-      const parsed=parseReceiptText(text,state.people.length);
-      state.receipts.push({id:uid(),name:file.name.replace(/\.[^.]+$/,''),currency:detectCurrency(text),payer:0,image:URL.createObjectURL(file),items:parsed.length?parsed:[{id:uid(),name:'품목명을 입력하세요',qty:1,price:0,alloc:Array(state.people.length).fill(0)}]});
+      analysis=analysis||analyzeReceiptText(text,state.people.length);const parsed=analysis.items;
+      state.receipts.push({id:uid(),name:file.name.replace(/\.[^.]+$/,''),currency:analysis.currency||detectCurrency(text),payer:0,image:URL.createObjectURL(file),statedTotal:analysis.statedTotal,totalLabel:analysis.totalLabel,reviewAttempts,reviewRolledBack,items:parsed.length?parsed:[{id:uid(),name:'품목명을 입력하세요',qty:1,price:0,alloc:Array(state.people.length).fill(0)}]});
       state.activeReceipt=state.receipts.length-1;current++;
     }
   }catch(e){
-    valid.forEach(file=>state.receipts.push({id:uid(),name:file.name.replace(/\.[^.]+$/,''),currency:'KRW',payer:0,image:URL.createObjectURL(file),items:[{id:uid(),name:'품목명을 입력하세요',qty:1,price:0,alloc:Array(state.people.length).fill(0)}]}));
+    valid.forEach(file=>state.receipts.push({id:uid(),name:file.name.replace(/\.[^.]+$/,''),currency:'KRW',payer:0,image:URL.createObjectURL(file),statedTotal:null,totalLabel:'',items:[{id:uid(),name:'품목명을 입력하세요',qty:1,price:0,alloc:Array(state.people.length).fill(0)}]}));
     state.activeReceipt=state.receipts.length-1;toast('OCR 엔진을 시작하지 못해 직접 입력 화면을 열었어요.');
   }finally{
     if(worker)await worker.terminate();$('#scanStatus').classList.add('hidden');save();renderAll();
@@ -76,7 +91,7 @@ function renderReceipts(){
   $$('[data-tab]').forEach(b=>b.onclick=()=>{state.activeReceipt=+b.dataset.tab;renderReceipts()});
   const r=state.receipts[state.activeReceipt];
   if(!r){$('#receiptEditor').innerHTML='';return}
-  $('#receiptEditor').innerHTML=`<div class="editor"><div class="editor-meta"><div class="field"><label>영수증 이름</label><input data-meta="name" value="${esc(r.name)}"></div><div class="field"><label>자동 인식 통화</label><select data-meta="currency">${Object.entries(CURRENCIES).map(([k,v])=>`<option value="${k}" ${r.currency===k?'selected':''}>${v.symbol} ${k}</option>`).join('')}</select></div><div class="field"><label>결제한 사람</label><select data-meta="payer">${state.people.map((p,i)=>`<option value="${i}" ${r.payer===i?'selected':''}>${esc(p)}</option>`).join('')}</select></div></div><div class="item-table-head"><span>품목</span><span>수량</span><span>개당 가격</span><span></span></div><div id="editorItems">${r.items.map((x,i)=>itemRow(x,i,r.currency)).join('')}</div><div class="editor-footer"><button id="addItemBtn">＋ 품목 추가</button><span class="editor-total">영수증 합계 <b>${money(receiptTotal(r),r.currency)}</b></span></div></div>`;
+  $('#receiptEditor').innerHTML=`<div class="editor"><div class="editor-meta"><div class="field"><label>영수증 이름</label><input data-meta="name" value="${esc(r.name)}"></div><div class="field"><label>자동 인식 통화</label><select data-meta="currency">${Object.entries(CURRENCIES).map(([k,v])=>`<option value="${k}" ${r.currency===k?'selected':''}>${v.symbol} ${k}</option>`).join('')}</select></div><div class="field"><label>결제한 사람</label><select data-meta="payer">${state.people.map((p,i)=>`<option value="${i}" ${r.payer===i?'selected':''}>${esc(p)}</option>`).join('')}</select></div></div><div class="item-table-head"><span>품목</span><span>수량</span><span>개당 가격</span><span></span></div><div id="editorItems">${r.items.map((x,i)=>itemRow(x,i,r.currency)).join('')}</div><div class="editor-footer"><button id="addItemBtn">＋ 품목 추가</button><div class="total-review">${totalReview(r)}<span class="editor-total">품목 계산 합계 <b>${money(receiptTotal(r),r.currency)}</b></span></div></div></div>`;
   $$('[data-meta]').forEach(el=>el.onchange=()=>{r[el.dataset.meta]=el.dataset.meta==='payer'?+el.value:el.value;save();renderAll()});
   $$('[data-item-field]').forEach(el=>el.onchange=()=>{const x=r.items[+el.dataset.index],field=el.dataset.itemField;x[field]=field==='name'?el.value:Math.max(field==='qty'?1:0,+el.value||0);if(field==='qty'){x.alloc=x.alloc.map(v=>Math.min(v,x.qty))}save();renderAll()});
   $$('[data-remove-item]').forEach(b=>b.onclick=()=>{r.items.splice(+b.dataset.removeItem,1);save();renderAll()});
@@ -84,6 +99,12 @@ function renderReceipts(){
 }
 function itemRow(x,i,c){return `<div class="item-row"><input data-item-field="name" data-index="${i}" value="${esc(x.name)}"><input type="number" min="1" data-item-field="qty" data-index="${i}" value="${x.qty}"><input type="number" min="0" data-item-field="price" data-index="${i}" value="${x.price}" aria-label="가격"><button data-remove-item="${i}" aria-label="품목 삭제">×</button></div>`}
 function receiptTotal(r){return r.items.reduce((s,x)=>s+x.qty*x.price,0)}
+function totalReview(r){
+  if(!Number.isFinite(r.statedTotal))return '<span class="total-check neutral">원본 최종 합계 미인식 · 품목만 확인해 주세요</span>';
+  const calculated=receiptTotal(r),difference=calculated-r.statedTotal,tolerance=Math.max(1,Math.abs(r.statedTotal)*.01),matched=Math.abs(difference)<=tolerance;
+  const reviewNote=r.reviewAttempts>1?(matched?' · 자동 재검토 완료':r.reviewRolledBack?' · 재검토 결과가 나빠 기존 결과로 롤백':' · 자동 재검토 후 직접 확인 필요'):'';
+  return `<span class="total-check ${matched?'matched':'mismatch'}">원본 최종 합계 ${money(r.statedTotal,r.currency)} · ${matched?'✓ 품목 합계와 일치':`불일치 (차이 ${money(Math.abs(difference),r.currency)})`}${reviewNote}</span>`;
+}
 
 function renderAllocation(){
   const list=[];state.receipts.forEach((r,ri)=>r.items.forEach((x,xi)=>{while(x.alloc.length<state.people.length)x.alloc.push(0);const used=x.alloc.reduce((a,b)=>a+b,0),done=used===x.qty;list.push(`<div class="alloc-card ${done?'complete':''}"><div class="alloc-top"><span class="alloc-icon">${['🍜','☕','🍺','🥟','🛍️'][(ri+xi)%5]}</span><div class="alloc-name"><b>${esc(x.name)}</b><small>영수증 ${ri+1} · ${money(x.price,r.currency)} × ${x.qty}개</small></div><span class="alloc-state">${done?'✓ 배분 완료':`${used} / ${x.qty}개`}</span></div><div class="alloc-controls">${state.people.map((p,pi)=>`<div class="person-qty"><span class="mini-avatar" style="background:${COLORS[pi]}">${initials(p)}</span><span>${esc(p)}</span><div class="qty-control"><button data-qty="-1" data-r="${ri}" data-i="${xi}" data-p="${pi}">−</button><span>${x.alloc[pi]||0}</span><button data-qty="1" data-r="${ri}" data-i="${xi}" data-p="${pi}">＋</button></div></div>`).join('')}</div></div>`)}));

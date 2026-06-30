@@ -18,15 +18,30 @@ function renderPeople(){
 }
 function addPerson(){const input=$('#personInput'),name=input.value.trim();if(!name)return toast('이름을 입력해 주세요.');if(state.people.length>=8)return toast('참여자는 최대 8명까지 추가할 수 있어요.');if(state.people.includes(name))return toast('같은 이름이 이미 있어요.');state.people.push(name);state.receipts.forEach(r=>r.items.forEach(x=>x.alloc.push(0)));input.value='';save();renderAll()}
 
-async function preprocessReceipt(file){
+async function preprocessReceipt(file,variant='gray'){
   const bitmap=await createImageBitmap(file),longest=Math.max(bitmap.width,bitmap.height),scale=Math.min(2,2200/longest),canvas=document.createElement('canvas');
   canvas.width=Math.round(bitmap.width*scale);canvas.height=Math.round(bitmap.height*scale);
   const ctx=canvas.getContext('2d',{willReadFrequently:true});ctx.drawImage(bitmap,0,0,canvas.width,canvas.height);bitmap.close();
   const image=ctx.getImageData(0,0,canvas.width,canvas.height),data=image.data,hist=new Uint32Array(256);
   for(let i=0;i<data.length;i+=4){const gray=Math.round(data[i]*.299+data[i+1]*.587+data[i+2]*.114);hist[gray]++}
   const pixels=data.length/4,edge=pixels*.015;let low=0,high=255,sum=0;while(low<245&&(sum+=hist[low])<edge)low++;sum=0;while(high>10&&(sum+=hist[high])<edge)high--;
-  const range=Math.max(40,high-low);for(let i=0;i<data.length;i+=4){let gray=data[i]*.299+data[i+1]*.587+data[i+2]*.114;gray=Math.max(0,Math.min(255,(gray-low)*255/range));gray=gray>242?255:Math.pow(gray/255,.9)*255;data[i]=data[i+1]=data[i+2]=gray}
+  const range=Math.max(40,high-low);for(let i=0;i<data.length;i+=4){let gray=data[i]*.299+data[i+1]*.587+data[i+2]*.114;gray=Math.max(0,Math.min(255,(gray-low)*255/range));gray=gray>242?255:Math.pow(gray/255,.9)*255;if(variant==='binary')gray=gray>175?255:0;data[i]=data[i+1]=data[i+2]=gray}
   ctx.putImageData(image,0,0);return new Promise(resolve=>canvas.toBlob(blob=>resolve(blob||file),'image/jpeg',.92));
+}
+function reconcileAnalyses(attempts){
+  const totals=[];attempts.forEach((attempt,attemptIndex)=>(attempt.totalCandidates||[]).forEach(total=>totals.push({...total,attemptIndex})));
+  let best=null;
+  attempts.forEach((attempt,attemptIndex)=>{
+    if(!attempt.items?.length)return;
+    const calculated=attempt.items.reduce((sum,item)=>sum+item.qty*item.price,0);
+    totals.forEach(total=>{
+      const tolerance=Math.max(1,Math.abs(total.amount)*.01),difference=Math.abs(calculated-total.amount);
+      if(difference>tolerance)return;
+      const score=attempt.items.length*20+(total.score||0)+(total.frequency||0)*4+(attempt.ocrConfidence||0)/10;
+      if(!best||score>best.score)best={...attempt,statedTotal:total.amount,totalLabel:total.label,calculatedTotal:calculated,difference:0,totalMatches:true,score,selectedAttempt:attemptIndex};
+    });
+  });
+  return best;
 }
 function sampleReceipt(){
   if(state.people.length<2)return toast('참여자를 먼저 2명 이상 추가해 주세요.');
@@ -57,26 +72,26 @@ async function scanFiles(files){
     });
     await worker.setParameters({tessedit_pageseg_mode:'6',preserve_interword_spaces:'1'});
     for(const file of valid){
-      let text='',analysis=null,reviewAttempts=1,reviewRolledBack=false;
+      let text='',analysis=null,reviewAttempts=0,reviewRolledBack=false,verificationFailed=false;
       try{
-        const prepared=await preprocessReceipt(file),result=await worker.recognize(prepared);text=result.data.text||'';
-        analysis=analyzeReceiptText(text,state.people.length);
-        if(analysis.totalMatches===false){
-          const primary=analysis;reviewing=true;reviewAttempts=2;
-          try{
-            await worker.setParameters({tessedit_pageseg_mode:'11',preserve_interword_spaces:'1'});
-            const retry=await worker.recognize(prepared),alternative=analyzeReceiptText(retry.data.text||'',state.people.length);
-            const distance=a=>Number.isFinite(a.statedTotal)?Math.abs(a.calculatedTotal-a.statedTotal):Infinity;
-            if(alternative.totalMatches===true||distance(alternative)<distance(primary))analysis=alternative;
-            else reviewRolledBack=true;
-          }finally{
-            reviewing=false;await worker.setParameters({tessedit_pageseg_mode:'6',preserve_interword_spaces:'1'});
-          }
+        const gray=await preprocessReceipt(file),attempts=[];
+        const configs=[{psm:'6',source:gray},{psm:'11',source:gray},{psm:'4',source:await preprocessReceipt(file,'binary')},{psm:'6',source:file}];
+        for(let attemptIndex=0;attemptIndex<configs.length;attemptIndex++){
+          const config=configs[attemptIndex];reviewing=attemptIndex>0;reviewAttempts=attemptIndex+1;
+          await worker.setParameters({tessedit_pageseg_mode:config.psm,preserve_interword_spaces:'1'});
+          const result=await worker.recognize(config.source),attemptText=result.data.text||'';if(!text)text=attemptText;
+          const candidate=analyzeReceiptText(attemptText,state.people.length);candidate.ocrConfidence=Number(result.data.confidence)||0;attempts.push(candidate);
+          analysis=reconcileAnalyses(attempts);
+          if(analysis&&attemptIndex>0)break;
         }
+        reviewing=false;analysis=analysis||reconcileAnalyses(attempts);
+        if(!analysis){verificationFailed=true;analysis=attempts[0]||analyzeReceiptText(text,state.people.length);analysis={...analysis,items:[],statedTotal:null,totalMatches:null}}
+        reviewRolledBack=Number.isInteger(analysis.selectedAttempt)&&analysis.selectedAttempt<reviewAttempts-1;
       }
       catch(e){toast(`${file.name}: 글자를 충분히 읽지 못해 직접 입력 화면을 열었어요.`)}
       analysis=analysis||analyzeReceiptText(text,state.people.length);const parsed=analysis.items;
-      state.receipts.push({id:uid(),name:file.name.replace(/\.[^.]+$/,''),currency:analysis.currency||detectCurrency(text),payer:0,image:URL.createObjectURL(file),statedTotal:analysis.statedTotal,totalLabel:analysis.totalLabel,reviewAttempts,reviewRolledBack,items:parsed.length?parsed:[{id:uid(),name:'품목명을 입력하세요',qty:1,price:0,alloc:Array(state.people.length).fill(0)}]});
+      state.receipts.push({id:uid(),name:file.name.replace(/\.[^.]+$/,''),currency:analysis.currency||detectCurrency(text),payer:0,image:URL.createObjectURL(file),statedTotal:analysis.statedTotal,totalLabel:analysis.totalLabel,reviewAttempts,reviewRolledBack,verificationFailed,items:parsed.length?parsed:[{id:uid(),name:'자동 검증 실패 — 직접 입력하세요',qty:1,price:0,alloc:Array(state.people.length).fill(0)}]});
+      if(verificationFailed)toast(`${file.name}: 여러 번 분석했지만 합계가 검증되지 않아 잘못된 결과는 표시하지 않았어요.`);
       state.activeReceipt=state.receipts.length-1;current++;
     }
   }catch(e){
@@ -100,6 +115,7 @@ function renderReceipts(){
 function itemRow(x,i,c){return `<div class="item-row"><input data-item-field="name" data-index="${i}" value="${esc(x.name)}"><input type="number" min="1" data-item-field="qty" data-index="${i}" value="${x.qty}"><input type="number" min="0" data-item-field="price" data-index="${i}" value="${x.price}" aria-label="가격"><button data-remove-item="${i}" aria-label="품목 삭제">×</button></div>`}
 function receiptTotal(r){return r.items.reduce((s,x)=>s+x.qty*x.price,0)}
 function totalReview(r){
+  if(r.verificationFailed)return '<span class="total-check mismatch">자동 분석을 모두 시도했지만 검증 실패 · 잘못된 결과는 폐기됨</span>';
   if(!Number.isFinite(r.statedTotal))return '<span class="total-check neutral">원본 최종 합계 미인식 · 품목만 확인해 주세요</span>';
   const calculated=receiptTotal(r),difference=calculated-r.statedTotal,tolerance=Math.max(1,Math.abs(r.statedTotal)*.01),matched=Math.abs(difference)<=tolerance;
   const reviewNote=r.reviewAttempts>1?(matched?' · 자동 재검토 완료':r.reviewRolledBack?' · 재검토 결과가 나빠 기존 결과로 롤백':' · 자동 재검토 후 직접 확인 필요'):'';

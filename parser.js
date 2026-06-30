@@ -187,23 +187,42 @@
     return best;
   }
 
+  function findTotalCandidates(text){
+    const lines=String(text||'').replace(/\r/g,'').split('\n').map(normalize).filter(Boolean);
+    let footerStart=lines.findIndex(line=>semanticMatch(SUMMARY_WORDS,line));
+    if(footerStart<0)footerStart=Math.floor(lines.length*.65);
+    const grouped=new Map();
+    lines.slice(footerStart).forEach((line,offset)=>{
+      const normalized=normalizeSplitThousands(line,true),isFinal=semanticMatch(FINAL_TOTAL,line),isSummary=semanticMatch(SUMMARY_WORDS,line),isTax=semanticMatch(SUBTOTAL_OR_TAX,line);
+      amountsIn(normalized).forEach(token=>{
+        const amount=token.value;if(!amount||amount>100000000||compactDateNumber(amount))return;
+        const current=grouped.get(amount)||{amount,frequency:0,score:0,label:line,index:footerStart+offset};
+        current.frequency++;current.score+=isFinal?6:isSummary?3:1;if(isTax&&!isFinal)current.score-=2;
+        if(isFinal)current.label=line;grouped.set(amount,current);
+      });
+    });
+    return[...grouped.values()].filter(x=>x.score>0||x.frequency>1).sort((a,b)=>b.score-a.score||b.frequency-a.frequency||b.amount-a.amount).slice(0,8);
+  }
+
   function analyzeOCR(text,peopleCount=0){
-    const currency=detectCurrency(text),summary=findStatedTotal(text);
+    const currency=detectCurrency(text),summary=findStatedTotal(text),totalCandidates=findTotalCandidates(text);
     let items=parseOCR(text,peopleCount),calculatedTotal=Math.round(items.reduce((sum,item)=>sum+item.qty*item.price,0)*100)/100;
-    const statedTotal=summary?summary.amount:null;
+    let statedTotal=summary?summary.amount:totalCandidates[0]?.amount??null,totalLabel=summary?summary.label:totalCandidates[0]?.label||'';
     // When OCR removed thousands separators, compare both valid readings and
     // keep the one that best reconciles with the independently read total.
     if(statedTotal!=null){
       const alternative=parseOCR(text,peopleCount,{mergeBareThousands:true}),alternativeTotal=Math.round(alternative.reduce((sum,item)=>sum+item.qty*item.price,0)*100)/100;
       if(Math.abs(alternativeTotal-statedTotal)<Math.abs(calculatedTotal-statedTotal)){items=alternative;calculatedTotal=alternativeTotal}
     }
+    const matchingCandidate=totalCandidates.find(candidate=>Math.abs(calculatedTotal-candidate.amount)<=Math.max(1,Math.abs(candidate.amount)*.01));
+    if(matchingCandidate){statedTotal=matchingCandidate.amount;totalLabel=matchingCandidate.label}
     const difference=statedTotal==null?null:Math.round((calculatedTotal-statedTotal)*100)/100;
     const tolerance=statedTotal==null?0:Math.max(1,Math.abs(statedTotal)*.01);
     return{
       currency,items,calculatedTotal,statedTotal,difference,
       totalMatches:statedTotal==null?null:Math.abs(difference)<=tolerance,
-      totalLabel:summary?summary.label:''
+      totalLabel,totalCandidates
     };
   }
-  return{detectCurrency,parseOCR,parseLine,analyzeOCR,findStatedTotal};
+  return{detectCurrency,parseOCR,parseLine,analyzeOCR,findStatedTotal,findTotalCandidates};
 });

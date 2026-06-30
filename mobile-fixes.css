@@ -20,7 +20,10 @@ main,.panel,.editor,.result-card{min-width:0}
   .editor-meta .field:first-child{grid-column:1/-1}
   .field input,.field select,.item-row input{width:100%;min-width:0}
   .item-table-head{display:none}
-  .item-row{grid-template-columns:minmax(0,1fr) 52px 76px 24px;padding-left:7px;padding-right:7px}
+  .item-row{grid-template-columns:minmax(70px,1fr) 46px 65px 72px 22px;padding-left:7px;padding-right:7px;gap:4px}
+  .item-row input{padding-left:5px;padding-right:5px}
+  .delete-receipt{grid-column:1/-1;width:100%}
+  .manual-guide{padding:18px 12px;justify-content:flex-start}
   .editor-footer{gap:8px;flex-wrap:wrap}
   .total-review{width:100%;align-items:flex-start}.total-check{line-height:1.45}.editor-total{width:100%;display:flex;justify-content:space-between;align-items:center}
   .editor-total b{font-size:16px}

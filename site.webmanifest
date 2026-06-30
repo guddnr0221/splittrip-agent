@@ -1,7 +1,7 @@
 {
   "name": "SplitTrip — AI 여행 경비 정산",
   "short_name": "SplitTrip",
-  "description": "영수증을 읽고 여행 경비를 자동 정산하는 AI 에이전트",
+  "description": "품목과 수량을 입력해 여행 경비를 정확하게 나누는 정산 도우미",
   "start_url": "./",
   "display": "standalone",
   "background_color": "#f5f7f3",

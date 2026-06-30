@@ -3,19 +3,19 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content="영수증을 읽고 여행 경비를 자동 정산하는 AI 에이전트" />
+  <meta name="description" content="여행 경비의 품목과 수량을 입력하고 정확하게 배분하는 정산 도우미" />
   <meta name="theme-color" content="#153f32" />
   <meta name="robots" content="noindex, nofollow" />
   <meta property="og:title" content="SplitTrip — AI 여행 경비 정산" />
-  <meta property="og:description" content="영수증을 올리면 AI가 품목을 읽고 여행 경비를 자동으로 나눠드려요." />
+  <meta property="og:description" content="품목·수량·금액을 입력하면 사람별 여행 경비를 정확하게 나눠드려요." />
   <title>SplitTrip — AI 여행 경비 정산</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml" />
   <link rel="manifest" href="site.webmanifest" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@500;600;700&family=Noto+Sans+KR:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=20260630-5" />
-  <link rel="stylesheet" href="mobile-fixes.css?v=20260630-5" />
+  <link rel="stylesheet" href="styles.css?v=20260630-6" />
+  <link rel="stylesheet" href="mobile-fixes.css?v=20260630-6" />
 </head>
 <body>
   <div class="noise"></div>
@@ -27,9 +27,9 @@
   <main>
     <section class="hero">
       <div>
-        <span class="eyebrow">AI RECEIPT SPLITTER</span>
+        <span class="eyebrow">SMART EXPENSE SPLITTER</span>
         <h1>여행의 마지막은<br><em>계산 말고, 추억으로.</em></h1>
-        <p>영수증을 올리면 AI가 품목과 금액을 읽고,<br>누가 무엇을 먹었는지만 체크하면 정산이 끝나요.</p>
+        <p>영수증을 보며 품목·수량·금액을 입력하고,<br>누가 무엇을 샀는지만 나누면 정산이 끝나요.</p>
       </div>
       <div class="hero-visual" aria-hidden="true">
         <div class="float-card fc-1"><span>🍜</span><b>Ramen</b><small>¥ 3,600</small></div>
@@ -41,7 +41,7 @@
     <nav class="steps" aria-label="정산 단계">
       <button class="step active" data-target="people"><span>1</span><div><b>함께한 사람</b><small>참여자 등록</small></div></button>
       <i></i>
-      <button class="step" data-target="receipts"><span>2</span><div><b>영수증</b><small>AI로 스캔</small></div></button>
+      <button class="step" data-target="receipts"><span>2</span><div><b>내역 입력</b><small>금액 자동 계산</small></div></button>
       <i></i>
       <button class="step" data-target="allocation"><span>3</span><div><b>품목 나누기</b><small>수량 배분</small></div></button>
       <i></i>
@@ -58,16 +58,8 @@
     </section>
 
     <section id="receipts" class="panel">
-      <div class="panel-head"><div><span class="section-no">02</span><h2>영수증을 올려주세요</h2><p>여러 장을 한 번에 올려도 괜찮아요. AI가 자동으로 읽어드려요.</p></div><button class="text-btn" id="sampleBtn">✨ 샘플 영수증 불러오기</button></div>
-      <label class="dropzone" id="dropzone">
-        <input id="fileInput" type="file" accept="image/*" multiple hidden />
-        <span class="upload-icon">↥</span>
-        <strong>영수증 사진을 드래그하거나 클릭하세요</strong>
-        <small>JPG, PNG, WEBP · 파일당 최대 10MB</small>
-        <span class="upload-btn">사진 선택</span>
-      </label>
-      <p class="privacy-note">🔒 영수증 사진은 외부 서버로 전송되지 않고 이 브라우저 안에서만 처리됩니다.</p>
-      <div id="scanStatus" class="scan-status hidden"><div class="spinner"></div><div><b>AI가 영수증을 읽고 있어요</b><small id="scanText">글자와 숫자를 찾는 중...</small></div><span id="scanPercent">0%</span></div>
+      <div class="panel-head"><div><span class="section-no">02</span><h2>영수증 내역을 입력하세요</h2><p>수량·개당 가격·품목 총액 중 금액을 입력하면 나머지는 자동 계산돼요.</p></div><button class="secondary add-receipt" id="addReceiptBtn">＋ 새 영수증</button></div>
+      <div id="manualEmpty" class="manual-guide"><span>⌨</span><div><b>사진 인식 없이 정확하게 입력해요</b><small>참여자 2명을 추가한 뒤 새 영수증을 만들어 주세요.</small></div></div>
       <div id="receiptTabs" class="receipt-tabs"></div>
       <div id="receiptEditor"></div>
     </section>
@@ -89,8 +81,6 @@
   <div id="toast" class="toast" role="alert"><span>!</span><p></p></div>
   <div id="modal" class="modal hidden" role="dialog" aria-modal="true"><div class="modal-card"><span class="modal-icon">⚠</span><h3>아직 배분이 끝나지 않았어요</h3><p id="modalText"></p><button class="primary" id="modalClose">확인하고 돌아가기</button></div></div>
 
-  <script src="vendor/ocr-engine.js"></script>
-  <script src="parser.js?v=20260630-5"></script>
-  <script src="app.js?v=20260630-5"></script>
+  <script src="app.js?v=20260630-6"></script>
 </body>
 </html>

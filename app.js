@@ -1,18 +1,19 @@
 const COLORS=['#dff5b2','#d9ebff','#ffe0d3','#eadcff','#d5f2e8','#fff0b9','#f7d8e7','#d8e4db'];
 const CURRENCIES={KRW:{symbol:'₩',name:'대한민국 원'},JPY:{symbol:'¥',name:'일본 엔'},USD:{symbol:'$',name:'미국 달러'},EUR:{symbol:'€',name:'유로'},GBP:{symbol:'£',name:'영국 파운드'},CNY:{symbol:'¥',name:'중국 위안'}};
-const state={people:['민지','서준','나'],receipts:[],activeReceipt:0};
+const STORAGE_KEY='splittrip-state-v2';
+const state={people:[],receipts:[],activeReceipt:0};
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 const money=(n,c='KRW')=>`${CURRENCIES[c]?.symbol||''}${Math.round(n||0).toLocaleString('ko-KR')}`;
 const uid=()=>Math.random().toString(36).slice(2,9);
 
-function save(){localStorage.setItem('splittrip-state',JSON.stringify(state));}
-function load(){try{const s=JSON.parse(localStorage.getItem('splittrip-state'));if(s?.people?.length)Object.assign(state,s)}catch(e){}}
+function save(){localStorage.setItem(STORAGE_KEY,JSON.stringify(state));}
+function load(){try{const s=JSON.parse(localStorage.getItem(STORAGE_KEY));if(s&&Array.isArray(s.people)&&Array.isArray(s.receipts))Object.assign(state,s)}catch(e){}}
 function toast(msg){$('#toast p').textContent=msg;$('#toast').classList.add('show');clearTimeout(toast.t);toast.t=setTimeout(()=>$('#toast').classList.remove('show'),2600)}
 function initials(name){return name.trim().slice(0,1).toUpperCase()}
 function renderPeople(){
   $('#peopleCount').textContent=state.people.length;
-  $('#peopleList').innerHTML=state.people.map((p,i)=>`<div class="person-chip"><span class="avatar" style="background:${COLORS[i]}">${initials(p)}</span><b>${esc(p)}</b><button data-remove-person="${i}" aria-label="${esc(p)} 삭제">×</button></div>`).join('');
-  $$('[data-remove-person]').forEach(b=>b.onclick=()=>{if(state.people.length<=2)return toast('정산하려면 최소 2명이 필요해요.');state.people.splice(+b.dataset.removePerson,1);state.receipts.forEach(r=>r.items.forEach(x=>{delete x.alloc[+b.dataset.removePerson];x.alloc=x.alloc.filter((_,idx)=>idx!==+b.dataset.removePerson)}));save();renderAll()});
+  $('#peopleList').innerHTML=state.people.length?state.people.map((p,i)=>`<div class="person-chip"><span class="avatar" style="background:${COLORS[i]}">${initials(p)}</span><b>${esc(p)}</b><button data-remove-person="${i}" aria-label="${esc(p)} 삭제">×</button></div>`).join(''):'<div class="people-empty"><span>＋</span><p><b>첫 참여자를 추가해 주세요</b><small>아래 입력창에 여행 멤버의 이름을 적어주세요.</small></p></div>';
+  $$('[data-remove-person]').forEach(b=>b.onclick=()=>{if(state.receipts.length&&state.people.length<=2)return toast('영수증이 있을 때는 최소 2명이 필요해요.');const removed=+b.dataset.removePerson;state.people.splice(removed,1);state.receipts.forEach(r=>{if(r.payer===removed)r.payer=0;else if(r.payer>removed)r.payer--;r.items.forEach(x=>x.alloc=x.alloc.filter((_,idx)=>idx!==removed))});save();renderAll()});
 }
 function addPerson(){const input=$('#personInput'),name=input.value.trim();if(!name)return toast('이름을 입력해 주세요.');if(state.people.length>=8)return toast('참여자는 최대 8명까지 추가할 수 있어요.');if(state.people.includes(name))return toast('같은 이름이 이미 있어요.');state.people.push(name);state.receipts.forEach(r=>r.items.forEach(x=>x.alloc.push(0)));input.value='';save();renderAll()}
 
@@ -34,12 +35,14 @@ function parseOCR(text){
   return items.slice(0,18);
 }
 function sampleReceipt(){
+  if(state.people.length<2)return toast('참여자를 먼저 2명 이상 추가해 주세요.');
   const r={id:uid(),name:'도쿄 저녁 식사',currency:'JPY',payer:Math.min(2,state.people.length-1),image:'',items:[
     ['미소 라멘',2,980],["돈코츠 라멘",1,1150],['교자',2,580],['생맥주',3,650],['우롱차',1,320]
   ].map(([name,qty,price])=>({id:uid(),name,qty,price,alloc:Array(state.people.length).fill(0)}))};
   state.receipts.push(r);state.activeReceipt=state.receipts.length-1;save();renderAll();toast('샘플 영수증을 불러왔어요. 품목을 바로 배분해 보세요.');$('#receiptEditor').scrollIntoView({behavior:'smooth',block:'center'});
 }
 async function scanFiles(files){
+  if(state.people.length<2)return toast('참여자를 먼저 2명 이상 추가해 주세요.');
   const valid=files.filter(file=>{
     if(file.size>10*1024*1024){toast(`${file.name}: 10MB 이하 사진만 가능해요.`);return false}
     if(file.type&&!file.type.startsWith('image/')){toast(`${file.name}: 이미지 파일만 올릴 수 있어요.`);return false}
@@ -96,7 +99,7 @@ function renderAllocation(){
 function changeQty(ri,xi,pi,d){const x=state.receipts[ri].items[xi],used=x.alloc.reduce((a,b)=>a+b,0),next=(x.alloc[pi]||0)+d;if(next<0)return;if(d>0&&used>=x.qty)return toast(`“${x.name}”은(는) ${x.qty}개까지만 배분할 수 있어요.`);x.alloc[pi]=next;save();renderAllocation();updateSummary()}
 function allocationsValid(){return state.receipts.flatMap(r=>r.items.map(x=>({name:x.name,ok:x.alloc.reduce((a,b)=>a+b,0)===x.qty}))).filter(x=>!x.ok)}
 function calculate(){
-  if(!state.receipts.length)return toast('먼저 영수증을 추가해 주세요.');const invalid=allocationsValid();if(invalid.length){$('#modalText').textContent=`${invalid.slice(0,3).map(x=>'“'+x.name+'”').join(', ')}${invalid.length>3?' 외 '+(invalid.length-3)+'개':''} 품목의 수량을 확인해 주세요.`;$('#modal').classList.remove('hidden');return}
+  if(state.people.length<2)return toast('참여자를 먼저 2명 이상 추가해 주세요.');if(!state.receipts.length)return toast('먼저 영수증을 추가해 주세요.');const invalid=allocationsValid();if(invalid.length){$('#modalText').textContent=`${invalid.slice(0,3).map(x=>'“'+x.name+'”').join(', ')}${invalid.length>3?' 외 '+(invalid.length-3)+'개':''} 품목의 수량을 확인해 주세요.`;$('#modal').classList.remove('hidden');return}
   renderResults();$('#result').classList.remove('hidden-section');$$('.step').forEach((x,i)=>x.classList.toggle('active',i===3));$('#result').scrollIntoView({behavior:'smooth'});
 }
 function renderResults(){
@@ -114,14 +117,14 @@ function renderResults(){
     html.push(`<div class="result-card ${paid&&!outEntries.length?'payer':''}"><div class="result-person"><span class="avatar" style="background:${COLORS[pi]};color:#17231f">${initials(p)}</span><b>${esc(p)}</b></div><small>${outEntries.length?'총 보낼 금액':paid?'결제자 정산':'정산 금액'}</small><strong>${headline}</strong><p>${detail}</p></div>`)
   });$('#resultCards').innerHTML=html.join('');updateSummary();
 }
-function updateSummary(){const all=state.receipts.flatMap(r=>r.items),done=all.filter(x=>x.alloc.reduce((a,b)=>a+b,0)===x.qty).length;$('#receiptCount').textContent=state.receipts.length+'장';const totals={};state.receipts.forEach(r=>totals[r.currency]=(totals[r.currency]||0)+receiptTotal(r));$('#grandTotal').textContent=Object.entries(totals).map(([c,n])=>money(n,c)).join(' + ')||'—';$('#doneItems').textContent=`${done} / ${all.length}`;$('#actionHint').textContent=state.receipts.length?`${all.length}개 품목 중 ${done}개 배분 완료`:'참여자를 확인한 뒤 영수증을 추가하세요'}
-function renderAll(){renderPeople();renderReceipts();renderAllocation();updateSummary();$$('.step').forEach((s,i)=>s.classList.toggle('active',i===(state.receipts.length?2:0)))}
+function updateSummary(){const all=state.receipts.flatMap(r=>r.items),done=all.filter(x=>x.alloc.reduce((a,b)=>a+b,0)===x.qty).length;$('#receiptCount').textContent=state.receipts.length+'장';const totals={};state.receipts.forEach(r=>totals[r.currency]=(totals[r.currency]||0)+receiptTotal(r));$('#grandTotal').textContent=Object.entries(totals).map(([c,n])=>money(n,c)).join(' + ')||'—';$('#doneItems').textContent=`${done} / ${all.length}`;$('#actionHint').textContent=state.people.length<2?`참여자를 ${2-state.people.length}명 더 추가해 주세요`:state.receipts.length?`${all.length}개 품목 중 ${done}개 배분 완료`:'영수증을 추가해 정산을 시작하세요'}
+function renderAll(){renderPeople();renderReceipts();renderAllocation();updateSummary();const ready=state.people.length>=2;$('#sampleBtn').disabled=!ready;$('#fileInput').disabled=!ready;$('#dropzone').classList.toggle('disabled',!ready);$('#dropzone').setAttribute('aria-disabled',String(!ready));$$('.step').forEach((s,i)=>s.classList.toggle('active',i===(state.receipts.length?2:0)))}
 function esc(s=''){return String(s).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
 
 $('#addPersonBtn').onclick=addPerson;$('#personInput').onkeydown=e=>{if(e.key==='Enter')addPerson()};$('#sampleBtn').onclick=sampleReceipt;$('#fileInput').onchange=e=>scanFiles([...e.target.files]);
 const dz=$('#dropzone');['dragenter','dragover'].forEach(x=>dz.addEventListener(x,e=>{e.preventDefault();dz.classList.add('drag')}));['dragleave','drop'].forEach(x=>dz.addEventListener(x,e=>{e.preventDefault();dz.classList.remove('drag')}));dz.addEventListener('drop',e=>scanFiles([...e.dataTransfer.files]));
 $('#calculateBtn').onclick=calculate;$('#modalClose').onclick=()=>$('#modal').classList.add('hidden');$('#modal').onclick=e=>{if(e.target.id==='modal')e.currentTarget.classList.add('hidden')};
 $$('.step').forEach(s=>s.onclick=()=>$('#'+s.dataset.target).scrollIntoView({behavior:'smooth',block:'start'}));
-$('#resetBtn').onclick=()=>{if(confirm('현재 정산 내용을 모두 지울까요?')){localStorage.removeItem('splittrip-state');location.reload()}};
+$('#resetBtn').onclick=()=>{if(confirm('현재 정산 내용을 모두 지울까요?')){localStorage.removeItem(STORAGE_KEY);localStorage.removeItem('splittrip-state');location.reload()}};
 load();renderAll();
 document.documentElement.dataset.ocrReady=window.Tesseract?.createWorker?'true':'false';

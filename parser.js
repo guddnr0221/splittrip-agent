@@ -38,6 +38,14 @@
   }
 
   function normalize(line){return String(line||'').replace(/[|_]{2,}/g,' ').replace(/[\t\u00a0]+/g,' ').replace(/\s+/g,' ').trim()}
+  function normalizeSplitThousands(line,allowBare=false){
+    let clean=normalize(line);
+    // OCR frequently turns ¥1,296 into "¥1 296". A currency mark makes the
+    // interpretation certain; bare groups are tried only as an alternative.
+    clean=clean.replace(/([₩￦¥￥$€£])\s*(\d{1,3})\s+(\d{3})(?!\d)/g,(_,symbol,head,tail)=>`${symbol}${head}${tail}`);
+    if(allowBare)clean=clean.replace(/(?<!\d)(\d{1,3})\s+(\d{3})(?!\d)/g,(_,head,tail)=>`${head}${tail}`);
+    return clean;
+  }
   function semanticMatch(pattern,line){
     const clean=normalize(line);if(pattern.test(clean))return true;
     // OCR often inserts spaces between label glyphs: 小 計, 合 計, T O T A L.
@@ -76,7 +84,7 @@
   }
 
   function parsePriceDetailLine(line){
-    const clean=normalize(line),match=clean.match(/(?:단가|単価?|@)?\s*([¥￥₩￦$€£]?\s*\d[\d,.]*)\s*[x×*]\s*(\d{1,2})\s*(?:개|個|点|ea|pcs?)?.*?([¥￥₩￦$€£]?\s*\d[\d,.]*)\s*$/i);
+    const clean=normalizeSplitThousands(line,true),match=clean.match(/(?:단가|単価?|@)?\s*([¥￥₩￦$€£]?\s*\d[\d,.]*)\s*[x×*]\s*(\d{1,2})\s*(?:개|個|点|ea|pcs?)?.*?([¥￥₩￦$€£]?\s*\d[\d,.]*)\s*$/i);
     if(!match)return null;
     const unit=numberValue(match[1]),qty=Number(match[2]),total=numberValue(match[3]);
     if(!Number.isFinite(unit)||!Number.isFinite(total)||qty<1||qty>50||unit<=0||!closeEnough(unit*qty,total))return null;
@@ -91,7 +99,7 @@
   }
 
   function parseLine(line,options={}){
-    const clean=normalize(line),currency=options.currency||'KRW';
+    const clean=normalizeSplitThousands(line,options.mergeBareThousands===true),currency=options.currency||'KRW';
     if(!clean||semanticMatch(META_WORDS,clean)||semanticMatch(SUMMARY_WORDS,clean)||semanticMatch(HEADER_WORDS,clean)||DATE_TIME.test(clean)||PHONE.test(clean)||WEB_OR_ID.test(clean))return null;
 
     const nums=amountsIn(clean);
@@ -128,7 +136,7 @@
     return{name:name.slice(0,45),qty,price:Math.round(unit*100)/100};
   }
 
-  function parseOCR(text,peopleCount=0){
+  function parseOCR(text,peopleCount=0,options={}){
     const currency=detectCurrency(text),lines=String(text||'').replace(/\r/g,'').split('\n').map(normalize).filter(Boolean);
     const items=[],seen=new Set();
     let foundItem=false,summaryReached=false,pendingName='';
@@ -148,14 +156,14 @@
       if(summaryReached)continue;
       const detail=parsePriceDetailLine(line);
       if(detail&&pendingName){addItem({name:pendingName,qty:detail.qty,price:detail.price});pendingName='';continue}
-      let item=parseLine(line,{currency});
+      let item=parseLine(line,{currency,mergeBareThousands:options.mergeBareThousands});
 
       // Support receipts where OCR separates a product name and its amount onto
       // adjacent lines, but only when the second line is purely numeric/money.
       if(!item&&i+1<lines.length&&!amountsIn(line).length&&hasUsefulName(cleanName(line))&&!semanticMatch(META_WORDS,line)&&!semanticMatch(HEADER_WORDS,line)){
         const next=lines[i+1],nextWithoutMoney=next.replace(MONEY,'').replace(/[\s:;|]/g,'');
         if(amountsIn(next).length&&nextWithoutMoney===''){
-          item=parseLine(`${line} ${next}`,{currency});
+          item=parseLine(`${line} ${next}`,{currency,mergeBareThousands:options.mergeBareThousands});
           if(item)i++;
         }
       }
@@ -171,7 +179,7 @@
     let best=null;
     lines.forEach((line,index)=>{
       if(!semanticMatch(FINAL_TOTAL,line)||semanticMatch(SUBTOTAL_OR_TAX,line)||semanticMatch(PAYMENT_ONLY,line))return;
-      const nums=amountsIn(line),amount=nums.length?nums[nums.length-1].value:NaN;
+      const totalLine=normalizeSplitThousands(line,true),nums=amountsIn(totalLine),amount=nums.length?nums[nums.length-1].value:NaN;
       if(!Number.isFinite(amount)||amount<=0||amount>100000000)return;
       const priority=/최종|총액|총\s*(?:합계|금액|결제)|grand\s*total|amount\s*due|balance\s*due|総合計|総額|お支払|請求額|总计|应付/i.test(line)?3:2;
       if(!best||priority>best.priority||(priority===best.priority&&index>best.index))best={amount,priority,index,label:line.slice(0,60)};
@@ -180,9 +188,15 @@
   }
 
   function analyzeOCR(text,peopleCount=0){
-    const currency=detectCurrency(text),items=parseOCR(text,peopleCount),summary=findStatedTotal(text);
-    const calculatedTotal=Math.round(items.reduce((sum,item)=>sum+item.qty*item.price,0)*100)/100;
+    const currency=detectCurrency(text),summary=findStatedTotal(text);
+    let items=parseOCR(text,peopleCount),calculatedTotal=Math.round(items.reduce((sum,item)=>sum+item.qty*item.price,0)*100)/100;
     const statedTotal=summary?summary.amount:null;
+    // When OCR removed thousands separators, compare both valid readings and
+    // keep the one that best reconciles with the independently read total.
+    if(statedTotal!=null){
+      const alternative=parseOCR(text,peopleCount,{mergeBareThousands:true}),alternativeTotal=Math.round(alternative.reduce((sum,item)=>sum+item.qty*item.price,0)*100)/100;
+      if(Math.abs(alternativeTotal-statedTotal)<Math.abs(calculatedTotal-statedTotal)){items=alternative;calculatedTotal=alternativeTotal}
+    }
     const difference=statedTotal==null?null:Math.round((calculatedTotal-statedTotal)*100)/100;
     const tolerance=statedTotal==null?0:Math.max(1,Math.abs(statedTotal)*.01);
     return{

@@ -38,6 +38,14 @@
   }
 
   function normalize(line){return String(line||'').replace(/[|_]{2,}/g,' ').replace(/[\t\u00a0]+/g,' ').replace(/\s+/g,' ').trim()}
+  function semanticMatch(pattern,line){
+    const clean=normalize(line);if(pattern.test(clean))return true;
+    // OCR often inserts spaces between label glyphs: 小 計, 合 計, T O T A L.
+    const compact=clean.replace(/[\s:：|_]+/g,'');
+    if(pattern.test(compact))return true;
+    if(pattern===FINAL_TOTAL)return /^(?:최종합계|최종금액|총합계|총금액|총결제액?|총액|결제금액|GRANDTOTAL|AMOUNTDUE|BALANCEDUE|NETTOTAL|TOTAL|総合計|総額|お支払(?:い)?額|請求額|合計|总计|应付|合计)/i.test(compact);
+    return false;
+  }
   function amountsIn(clean){
     return[...clean.matchAll(MONEY)].map(m=>({raw:m[0],value:numberValue(m[0]),index:m.index,end:m.index+m[0].length,marked:CURRENCY_MARK.test(m[0]),decimal:/[.,]\d{1,2}\s*$/.test(m[0])})).filter(x=>Number.isFinite(x.value)&&x.value>=0);
   }
@@ -60,15 +68,31 @@
     return raw
       .replace(/^[-*#•·:;]+\s*/,'')
       .replace(/^\d{3,10}\s*/,'')
+      .replace(/^(?:[O0U]{2,}\d{1,4})\s*/i,'')
       .replace(/\s+(?:x|×|\*)\s*\d{1,2}\s*$/i,'')
       .replace(/[^\p{L}\p{N}\s&+().'’\-/]/gu,' ')
       .replace(/\s+/g,' ')
       .trim();
   }
 
+  function parsePriceDetailLine(line){
+    const clean=normalize(line),match=clean.match(/(?:단가|単価?|@)?\s*([¥￥₩￦$€£]?\s*\d[\d,.]*)\s*[x×*]\s*(\d{1,2})\s*(?:개|個|点|ea|pcs?)?.*?([¥￥₩￦$€£]?\s*\d[\d,.]*)\s*$/i);
+    if(!match)return null;
+    const unit=numberValue(match[1]),qty=Number(match[2]),total=numberValue(match[3]);
+    if(!Number.isFinite(unit)||!Number.isFinite(total)||qty<1||qty>50||unit<=0||!closeEnough(unit*qty,total))return null;
+    return{qty,price:Math.round(unit*100)/100,total};
+  }
+
+  function productNameCandidate(line){
+    const clean=normalize(line);
+    if(!clean||semanticMatch(META_WORDS,clean)||semanticMatch(SUMMARY_WORDS,clean)||semanticMatch(HEADER_WORDS,clean)||DATE_TIME.test(clean)||PHONE.test(clean)||WEB_OR_ID.test(clean))return'';
+    const name=cleanName(clean);
+    return hasUsefulName(name)?name.slice(0,45):'';
+  }
+
   function parseLine(line,options={}){
     const clean=normalize(line),currency=options.currency||'KRW';
-    if(!clean||META_WORDS.test(clean)||SUMMARY_WORDS.test(clean)||HEADER_WORDS.test(clean)||DATE_TIME.test(clean)||PHONE.test(clean)||WEB_OR_ID.test(clean))return null;
+    if(!clean||semanticMatch(META_WORDS,clean)||semanticMatch(SUMMARY_WORDS,clean)||semanticMatch(HEADER_WORDS,clean)||DATE_TIME.test(clean)||PHONE.test(clean)||WEB_OR_ID.test(clean))return null;
 
     const nums=amountsIn(clean);
     if(!nums.length||nums.length>5)return null;
@@ -91,7 +115,7 @@
     }
 
     const name=cleanName(clean.slice(0,cut));
-    if(!hasUsefulName(name)||META_WORDS.test(name)||SUMMARY_WORDS.test(name)||qty<1||qty>50||unit<=0)return null;
+    if(!hasUsefulName(name)||semanticMatch(META_WORDS,name)||semanticMatch(SUMMARY_WORDS,name)||qty<1||qty>50||unit<=0)return null;
 
     // A bare 1–31/49 is more likely a day, count or reference than a price in
     // integer-heavy currencies. Decimal/currency-marked values remain valid.
@@ -107,31 +131,37 @@
   function parseOCR(text,peopleCount=0){
     const currency=detectCurrency(text),lines=String(text||'').replace(/\r/g,'').split('\n').map(normalize).filter(Boolean);
     const items=[],seen=new Set();
-    let foundItem=false,summaryReached=false;
+    let foundItem=false,summaryReached=false,pendingName='';
+    const addItem=item=>{
+      const key=`${item.name.toLowerCase()}|${item.qty}|${item.price}`;
+      if(seen.has(key))return;
+      seen.add(key);foundItem=true;
+      items.push({...item,id:Math.random().toString(36).slice(2,9),alloc:Array(peopleCount).fill(0)});
+    };
     for(let i=0;i<lines.length;i++){
       const line=lines[i];
-      if(SUMMARY_WORDS.test(line)){
+      if(semanticMatch(SUMMARY_WORDS,line)){
         if(foundItem)summaryReached=true;
         continue;
       }
       // Once a real item section has ended, payment/footer numbers cannot be items.
       if(summaryReached)continue;
+      const detail=parsePriceDetailLine(line);
+      if(detail&&pendingName){addItem({name:pendingName,qty:detail.qty,price:detail.price});pendingName='';continue}
       let item=parseLine(line,{currency});
 
       // Support receipts where OCR separates a product name and its amount onto
       // adjacent lines, but only when the second line is purely numeric/money.
-      if(!item&&i+1<lines.length&&!amountsIn(line).length&&hasUsefulName(cleanName(line))&&!META_WORDS.test(line)&&!HEADER_WORDS.test(line)){
+      if(!item&&i+1<lines.length&&!amountsIn(line).length&&hasUsefulName(cleanName(line))&&!semanticMatch(META_WORDS,line)&&!semanticMatch(HEADER_WORDS,line)){
         const next=lines[i+1],nextWithoutMoney=next.replace(MONEY,'').replace(/[\s:;|]/g,'');
         if(amountsIn(next).length&&nextWithoutMoney===''){
           item=parseLine(`${line} ${next}`,{currency});
           if(item)i++;
         }
       }
-      if(!item)continue;
-      const key=`${item.name.toLowerCase()}|${item.qty}|${item.price}`;
-      if(seen.has(key))continue;
-      seen.add(key);foundItem=true;
-      items.push({...item,id:Math.random().toString(36).slice(2,9),alloc:Array(peopleCount).fill(0)});
+      if(item){addItem(item);pendingName='';continue}
+      const candidate=productNameCandidate(line);
+      if(candidate&&!/^\d+$/.test(candidate))pendingName=candidate;
     }
     return items.slice(0,30);
   }
@@ -140,7 +170,7 @@
     const lines=String(text||'').replace(/\r/g,'').split('\n').map(normalize).filter(Boolean);
     let best=null;
     lines.forEach((line,index)=>{
-      if(!FINAL_TOTAL.test(line)||SUBTOTAL_OR_TAX.test(line)||PAYMENT_ONLY.test(line))return;
+      if(!semanticMatch(FINAL_TOTAL,line)||semanticMatch(SUBTOTAL_OR_TAX,line)||semanticMatch(PAYMENT_ONLY,line))return;
       const nums=amountsIn(line),amount=nums.length?nums[nums.length-1].value:NaN;
       if(!Number.isFinite(amount)||amount<=0||amount>100000000)return;
       const priority=/최종|총액|총\s*(?:합계|금액|결제)|grand\s*total|amount\s*due|balance\s*due|総合計|総額|お支払|請求額|总计|应付/i.test(line)?3:2;

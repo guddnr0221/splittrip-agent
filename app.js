@@ -3,6 +3,7 @@ const CURRENCIES={KRW:{symbol:'₩',name:'대한민국 원'},JPY:{symbol:'¥',na
 const STORAGE_KEY='splittrip-state-v2';
 const state={people:[],receipts:[],activeReceipt:0};
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+const {detectCurrency,parseOCR:parseReceiptText}=window.SplitTripParser;
 const money=(n,c='KRW')=>`${CURRENCIES[c]?.symbol||''}${Math.round(n||0).toLocaleString('ko-KR')}`;
 const uid=()=>Math.random().toString(36).slice(2,9);
 
@@ -17,22 +18,15 @@ function renderPeople(){
 }
 function addPerson(){const input=$('#personInput'),name=input.value.trim();if(!name)return toast('이름을 입력해 주세요.');if(state.people.length>=8)return toast('참여자는 최대 8명까지 추가할 수 있어요.');if(state.people.includes(name))return toast('같은 이름이 이미 있어요.');state.people.push(name);state.receipts.forEach(r=>r.items.forEach(x=>x.alloc.push(0)));input.value='';save();renderAll()}
 
-function detectCurrency(text){if(/₩|원|KRW/i.test(text))return'KRW';if(/€|EUR/i.test(text))return'EUR';if(/£|GBP/i.test(text))return'GBP';if(/元|CNY|RMB/i.test(text))return'CNY';if(/¥|円|JPY|税込|合計/.test(text))return'JPY';if(/\$|USD/i.test(text))return'USD';return'KRW'}
-function parseOCR(text){
-  const lines=text.split(/\n/).map(x=>x.trim()).filter(Boolean),items=[];
-  const skip=/total|subtotal|tax|vat|합계|총액|부가세|결제|카드|cash|change|お預|合計|消費税/i;
-  for(const line of lines){
-    if(skip.test(line))continue;
-    const nums=[...line.matchAll(/(?:₩|¥|\$|€|£)?\s*([0-9][0-9,.]*)/g)];
-    if(!nums.length)continue;
-    const last=nums[nums.length-1],price=Number(last[1].replace(/,/g,''));
-    if(!price||price>100000000)continue;
-    let name=line.slice(0,last.index).replace(/[\d*×xX]\s*$/,'').trim();
-    if(name.length<2)continue;
-    let qty=1;const qm=line.match(/(?:x|×|\*)\s*(\d+)|\b(\d+)\s*(?:개|ea)/i);if(qm)qty=+(qm[1]||qm[2]);
-    items.push({id:uid(),name:name.slice(0,40),qty:Math.max(1,qty),price:Math.round(price/qty),alloc:Array(state.people.length).fill(0)});
-  }
-  return items.slice(0,18);
+async function preprocessReceipt(file){
+  const bitmap=await createImageBitmap(file),longest=Math.max(bitmap.width,bitmap.height),scale=Math.min(2,2200/longest),canvas=document.createElement('canvas');
+  canvas.width=Math.round(bitmap.width*scale);canvas.height=Math.round(bitmap.height*scale);
+  const ctx=canvas.getContext('2d',{willReadFrequently:true});ctx.drawImage(bitmap,0,0,canvas.width,canvas.height);bitmap.close();
+  const image=ctx.getImageData(0,0,canvas.width,canvas.height),data=image.data,hist=new Uint32Array(256);
+  for(let i=0;i<data.length;i+=4){const gray=Math.round(data[i]*.299+data[i+1]*.587+data[i+2]*.114);hist[gray]++}
+  const pixels=data.length/4,edge=pixels*.015;let low=0,high=255,sum=0;while(low<245&&(sum+=hist[low])<edge)low++;sum=0;while(high>10&&(sum+=hist[high])<edge)high--;
+  const range=Math.max(40,high-low);for(let i=0;i<data.length;i+=4){let gray=data[i]*.299+data[i+1]*.587+data[i+2]*.114;gray=Math.max(0,Math.min(255,(gray-low)*255/range));gray=gray>242?255:Math.pow(gray/255,.9)*255;data[i]=data[i+1]=data[i+2]=gray}
+  ctx.putImageData(image,0,0);return new Promise(resolve=>canvas.toBlob(blob=>resolve(blob||file),'image/jpeg',.92));
 }
 function sampleReceipt(){
   if(state.people.length<2)return toast('참여자를 먼저 2명 이상 추가해 주세요.');
@@ -61,11 +55,12 @@ async function scanFiles(files){
       langPath:'./vendor/lang',
       logger:m=>{if(m.progress){const p=Math.round(((current+m.progress)/valid.length)*100);$('#scanPercent').textContent=Math.min(100,p)+'%';$('#scanText').textContent=m.status==='recognizing text'?`${current+1}번째 영수증의 품목과 가격을 찾는 중...`:'OCR 엔진을 준비하는 중...'}}
     });
+    await worker.setParameters({tessedit_pageseg_mode:'6',preserve_interword_spaces:'1'});
     for(const file of valid){
       let text='';
-      try{const result=await worker.recognize(file);text=result.data.text||''}
+      try{const prepared=await preprocessReceipt(file),result=await worker.recognize(prepared);text=result.data.text||''}
       catch(e){toast(`${file.name}: 글자를 충분히 읽지 못해 직접 입력 화면을 열었어요.`)}
-      const parsed=parseOCR(text);
+      const parsed=parseReceiptText(text,state.people.length);
       state.receipts.push({id:uid(),name:file.name.replace(/\.[^.]+$/,''),currency:detectCurrency(text),payer:0,image:URL.createObjectURL(file),items:parsed.length?parsed:[{id:uid(),name:'품목명을 입력하세요',qty:1,price:0,alloc:Array(state.people.length).fill(0)}]});
       state.activeReceipt=state.receipts.length-1;current++;
     }

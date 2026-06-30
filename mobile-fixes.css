@@ -1,0 +1,35 @@
+html,body{max-width:100%;overflow-x:hidden}
+main,.panel,.editor,.result-card{min-width:0}
+.result-card>strong,.result-card>p{overflow-wrap:anywhere}
+
+@media(max-width:760px){
+  main{width:100%;padding-left:12px;padding-right:12px}
+  .topbar{padding-left:14px;padding-right:14px}
+  .hero{grid-template-columns:minmax(0,1fr)}
+  .hero h1{font-size:36px}
+  .panel{width:100%;padding-left:14px;padding-right:14px}
+  .panel-head{flex-wrap:wrap}
+  .panel-head>div:first-child{min-width:0}
+  .add-person-row{width:100%}
+  .add-person-row input{width:0;min-width:0}
+  .receipt-tabs{max-width:100%}
+  .receipt-tab{max-width:76vw;overflow:hidden;text-overflow:ellipsis}
+  .editor{width:100%}
+  .editor-meta{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px}
+  .editor-meta .field{min-width:0}
+  .editor-meta .field:first-child{grid-column:1/-1}
+  .field input,.field select,.item-row input{width:100%;min-width:0}
+  .item-table-head{display:none}
+  .item-row{grid-template-columns:minmax(0,1fr) 52px 76px 24px;padding-left:7px;padding-right:7px}
+  .editor-footer{gap:8px;flex-wrap:wrap}
+  .editor-total b{font-size:16px}
+  .legend{flex-wrap:wrap}
+  .alloc-top{padding:12px 10px}
+  .alloc-name{min-width:0}
+  .alloc-name b,.alloc-name small{overflow-wrap:anywhere}
+  .alloc-state{white-space:nowrap}
+  .alloc-controls{padding:12px 10px;gap:10px}
+  .person-qty{min-width:0}
+  .result-cards{grid-template-columns:minmax(0,1fr)}
+  .privacy-note{padding:0 8px;line-height:1.5}
+}
